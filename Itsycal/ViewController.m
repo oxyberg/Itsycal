@@ -524,6 +524,25 @@
     NSString *iconText;
     
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowMonthInIcon] || [[NSUserDefaults standardUserDefaults] boolForKey:kShowDayOfWeekInIcon]) {
+        // Workaround for macOS 15 Sequoia bug:
+        // Since macOS 15 Sequoia, if the current locale's calendar is
+        // ISO 8601, NSDateFormatter won't honor the EEE format and simply
+        // omits showing the day of the week.
+        //
+        // The current locale's identifier is of the form:
+        //   <languageCode>_<countryCode>@calendar=<calendarCode>
+        //
+        // For example:
+        //   en_US@calendar=iso8601
+        //
+        // Set up a locale like the current locale, but with the Gregorian
+        // calendar set explicityly. By using our own locale that captures
+        // the correct language and country, but omits the buggy ISO 8601
+        // calendar, we can show the day of the week per the user's preference.
+        NSString *localeID = [NSString stringWithFormat:@"%@_%@@calendar=gregorian",
+                              NSLocale.currentLocale.languageCode,
+                              NSLocale.currentLocale.countryCode];
+        NSLocale *localeWithoutCalendar = [NSLocale localeWithLocaleIdentifier:localeID];
         NSMutableString *template = @"d".mutableCopy;
         if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowMonthInIcon]) {
             [template appendString:@"MMM"];
@@ -531,7 +550,7 @@
         if ([[NSUserDefaults standardUserDefaults] boolForKey:kShowDayOfWeekInIcon]) {
             [template appendString:@"EEE"];
         }
-        [_iconDateFormatter setDateFormat:[NSDateFormatter dateFormatFromTemplate:template options:0 locale:[NSLocale currentLocale]]];
+        [_iconDateFormatter setDateFormat:[NSDateFormatter dateFormatFromTemplate:template options:0 locale:localeWithoutCalendar]];
         iconText = [_iconDateFormatter stringFromDate:[NSDate new]];
     } else {
         iconText = [NSString stringWithFormat:@"%zd", _moCal.todayDate.day];
@@ -1168,7 +1187,8 @@
 
 - (void)updateTimer
 {
-    NSDateComponents *components = [_nsCal components:NSCalendarUnitEra | NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond fromDate:[NSDate new]];
+    NSDate *now = [NSDate date];
+    NSDateComponents *components = [_nsCal components:NSCalendarUnitEra | NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond fromDate:now];
 
     // Should we beep-beep on the hour? If so, cap the volume relative to the
     // system volume so it's not too loud.
@@ -1193,20 +1213,17 @@
     }
 
     // Set up _timer to fire on next minute or second.
+    NSDate *fireDate;
     if (_clockUsesSeconds) {
-        components.second += 1;
+        NSTimeInterval nowSeconds = [now timeIntervalSinceReferenceDate];
+        NSTimeInterval nextSecond = floor(nowSeconds) + 1.0;
+        fireDate = [NSDate dateWithTimeIntervalSinceReferenceDate:nextSecond];
     }
     else {
-        components.minute += 1;
-        components.second = 0;
+        NSDateComponents *comp = [NSDateComponents new];
+        comp.second = 0;
+        fireDate = [_nsCal nextDateAfterDate:now matchingComponents:comp options:NSCalendarMatchNextTime];
     }
-    NSDate *fireDate = [_nsCal dateFromComponents:components];
-    // Set new fireDate a quarter second late in the hope that it
-    // avoids the edge case when we fall back at the end of Daylight
-    // Savings time. Some users reported either the seconds timer
-    // getting stuck in a loop and pinning CPU at 100% or the minute
-    // timer not firing until the fallback hour has ended.
-    fireDate = [fireDate dateByAddingTimeInterval:0.25];
     [_timer invalidate];
     _timer = [[NSTimer alloc] initWithFireDate:fireDate interval:0 target:self selector:@selector(updateTimer) userInfo:nil repeats:NO];
     [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
@@ -1371,3 +1388,4 @@
 }
 
 @end
+
